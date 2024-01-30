@@ -1,6 +1,7 @@
 import {
   For,
   Show,
+  batch,
   createEffect,
   createMemo,
   createSignal,
@@ -56,7 +57,6 @@ import {
   useQueryDevtoolsContext,
   useTheme,
 } from './Context'
-import { loadFonts } from './fonts'
 import type {
   DevToolsErrorType,
   DevtoolsButtonPosition,
@@ -68,6 +68,7 @@ import type {
   MutationCache,
   Query,
   QueryCache,
+  QueryCacheNotifyEvent,
   QueryState,
 } from '@tanstack/query-core'
 import type { StorageObject, StorageSetter } from '@solid-primitives/storage'
@@ -106,7 +107,9 @@ const [selectedMutationId, setSelectedMutationId] = createSignal<number | null>(
 )
 const [panelWidth, setPanelWidth] = createSignal(0)
 
-export const DevtoolsComponent: Component<QueryDevtoolsProps> = (props) => {
+export type DevtoolsComponentType = Component<QueryDevtoolsProps>
+
+const DevtoolsComponent: DevtoolsComponentType = (props) => {
   const [localStore, setLocalStore] = createLocalStorage({
     prefix: 'TanstackQueryDevtools',
   })
@@ -133,9 +136,7 @@ export const DevtoolsComponent: Component<QueryDevtoolsProps> = (props) => {
 
 export default DevtoolsComponent
 
-export const Devtools: Component<DevtoolsPanelProps> = (props) => {
-  loadFonts()
-
+const Devtools: Component<DevtoolsPanelProps> = (props) => {
   const theme = useTheme()
   const styles = createMemo(() => {
     return theme() === 'dark' ? darkStyles : lightStyles
@@ -149,8 +150,8 @@ export const Devtools: Component<DevtoolsPanelProps> = (props) => {
     return props.localStore.open === 'true'
       ? true
       : props.localStore.open === 'false'
-      ? false
-      : useQueryDevtoolsContext().initialIsOpen || INITIAL_IS_OPEN
+        ? false
+        : useQueryDevtoolsContext().initialIsOpen || INITIAL_IS_OPEN
   })
 
   const position = createMemo(() => {
@@ -161,8 +162,9 @@ export const Devtools: Component<DevtoolsPanelProps> = (props) => {
     )
   })
 
+  let transitionsContainerRef!: HTMLDivElement
   createEffect(() => {
-    const root = document.querySelector('.tsqd-parent-container') as HTMLElement
+    const root = transitionsContainerRef.parentElement as HTMLElement
     const height = props.localStore.height || DEFAULT_HEIGHT
     const width = props.localStore.width || DEFAULT_WIDTH
     const panelPosition = position()
@@ -176,6 +178,23 @@ export const Devtools: Component<DevtoolsPanelProps> = (props) => {
     )
   })
 
+  // Calculates the inherited font size of the parent and sets it as a CSS variable
+  // All the design tokens are calculated based on this variable
+  onMount(() => {
+    // This is to make sure that the font size is updated when the stylesheet is updated
+    // and the user focuses back on the window
+    const onFocus = () => {
+      const root = transitionsContainerRef.parentElement as HTMLElement
+      const fontSize = getComputedStyle(root).fontSize
+      root.style.setProperty('--tsqd-font-size', fontSize)
+    }
+    onFocus()
+    window.addEventListener('focus', onFocus)
+    onCleanup(() => {
+      window.removeEventListener('focus', onFocus)
+    })
+  })
+
   return (
     <div
       // styles for animating the panel in and out
@@ -183,7 +202,9 @@ export const Devtools: Component<DevtoolsPanelProps> = (props) => {
         css`
           & .tsqd-panel-transition-exit-active,
           & .tsqd-panel-transition-enter-active {
-            transition: opacity 0.3s, transform 0.3s;
+            transition:
+              opacity 0.3s,
+              transform 0.3s;
           }
 
           & .tsqd-panel-transition-exit-to,
@@ -195,7 +216,9 @@ export const Devtools: Component<DevtoolsPanelProps> = (props) => {
 
           & .tsqd-button-transition-exit-active,
           & .tsqd-button-transition-enter-active {
-            transition: opacity 0.3s, transform 0.3s;
+            transition:
+              opacity 0.3s,
+              transform 0.3s;
           }
 
           & .tsqd-button-transition-exit-to,
@@ -203,12 +226,13 @@ export const Devtools: Component<DevtoolsPanelProps> = (props) => {
             transform: ${buttonPosition() === 'top-left'
               ? `translateX(-72px);`
               : buttonPosition() === 'top-right'
-              ? `translateX(72px);`
-              : `translateY(72px);`};
+                ? `translateX(72px);`
+                : `translateY(72px);`};
           }
         `,
         'tsqd-transitions-container',
       )}
+      ref={transitionsContainerRef}
     >
       <TransitionGroup name="tsqd-panel-transition">
         <Show when={isOpen()}>
@@ -242,7 +266,7 @@ export const Devtools: Component<DevtoolsPanelProps> = (props) => {
   )
 }
 
-export const DevtoolsPanel: Component<DevtoolsPanelProps> = (props) => {
+const DevtoolsPanel: Component<DevtoolsPanelProps> = (props) => {
   const theme = useTheme()
   const styles = createMemo(() => {
     return theme() === 'dark' ? darkStyles : lightStyles
@@ -306,16 +330,16 @@ export const DevtoolsPanel: Component<DevtoolsPanelProps> = (props) => {
       }
     }
 
-    const unsub = () => {
+    const unsubscribe = () => {
       if (isResizing()) {
         setIsResizing(false)
       }
       document.removeEventListener('mousemove', runDrag, false)
-      document.removeEventListener('mouseUp', unsub, false)
+      document.removeEventListener('mouseUp', unsubscribe, false)
     }
 
     document.addEventListener('mousemove', runDrag, false)
-    document.addEventListener('mouseup', unsub, false)
+    document.addEventListener('mouseup', unsubscribe, false)
   }
 
   let panelRef!: HTMLDivElement
@@ -444,6 +468,7 @@ const ContentView: Component<DevtoolsPanelProps> = (props) => {
   setupQueryCacheSubscription()
   setupMutationCacheSubscription()
 
+  let containerRef!: HTMLDivElement
   const theme = useTheme()
   const styles = createMemo(() => {
     return theme() === 'dark' ? darkStyles : lightStyles
@@ -553,6 +578,13 @@ const ContentView: Component<DevtoolsPanelProps> = (props) => {
     props.setLocalStore('position', pos)
   }
 
+  // Sets the Font Size variable on portal menu elements since they will be outside
+  // the main panel container
+  const setComputedVariables = (el: HTMLDivElement) => {
+    const computedStyle = getComputedStyle(containerRef)
+    const variable = computedStyle.getPropertyValue('--tsqd-font-size')
+    el.style.setProperty('--tsqd-font-size', variable)
+  }
   return (
     <>
       <div
@@ -566,8 +598,15 @@ const ContentView: Component<DevtoolsPanelProps> = (props) => {
               height: 50%;
               max-height: 50%;
             `,
+          panelWidth() < secondBreakpoint &&
+            !(selectedQueryHash() || selectedMutationId()) &&
+            css`
+              height: 100%;
+              max-height: 100%;
+            `,
           'tsqd-queries-container',
         )}
+        ref={containerRef}
       >
         <div class={cx(styles().row, 'tsqd-header')}>
           <div class={styles().logoAndToggleContainer}>
@@ -796,7 +835,9 @@ const ContentView: Component<DevtoolsPanelProps> = (props) => {
               >
                 <Settings />
               </DropdownMenu.Trigger>
-              <DropdownMenu.Portal>
+              <DropdownMenu.Portal
+                ref={(el) => setComputedVariables(el as HTMLDivElement)}
+              >
                 <DropdownMenu.Content
                   class={cx(styles().settingsMenu, 'tsqd-settings-menu')}
                 >
@@ -819,7 +860,9 @@ const ContentView: Component<DevtoolsPanelProps> = (props) => {
                       <span>Position</span>
                       <ChevronDown />
                     </DropdownMenu.SubTrigger>
-                    <DropdownMenu.Portal>
+                    <DropdownMenu.Portal
+                      ref={(el) => setComputedVariables(el as HTMLDivElement)}
+                    >
                       <DropdownMenu.SubContent
                         class={cx(
                           styles().settingsMenu,
@@ -896,7 +939,9 @@ const ContentView: Component<DevtoolsPanelProps> = (props) => {
                       <span>Theme</span>
                       <ChevronDown />
                     </DropdownMenu.SubTrigger>
-                    <DropdownMenu.Portal>
+                    <DropdownMenu.Portal
+                      ref={(el) => setComputedVariables(el as HTMLDivElement)}
+                    >
                       <DropdownMenu.SubContent
                         class={cx(
                           styles().settingsMenu,
@@ -999,7 +1044,7 @@ const ContentView: Component<DevtoolsPanelProps> = (props) => {
   )
 }
 
-export const QueryRow: Component<{ query: Query }> = (props) => {
+const QueryRow: Component<{ query: Query }> = (props) => {
   const theme = useTheme()
   const styles = createMemo(() => {
     return theme() === 'dark' ? darkStyles : lightStyles
@@ -1013,6 +1058,8 @@ export const QueryRow: Component<{ query: Query }> = (props) => {
       queryCache().find({
         queryKey: props.query.queryKey,
       })?.state,
+    true,
+    (e) => e.query.queryHash === props.query.queryHash,
   )
 
   const isDisabled = createSubscribeToQueryCacheBatcher(
@@ -1022,6 +1069,8 @@ export const QueryRow: Component<{ query: Query }> = (props) => {
           queryKey: props.query.queryKey,
         })
         ?.isDisabled() ?? false,
+    true,
+    (e) => e.query.queryHash === props.query.queryHash,
   )
 
   const isStale = createSubscribeToQueryCacheBatcher(
@@ -1031,6 +1080,8 @@ export const QueryRow: Component<{ query: Query }> = (props) => {
           queryKey: props.query.queryKey,
         })
         ?.isStale() ?? false,
+    true,
+    (e) => e.query.queryHash === props.query.queryHash,
   )
 
   const observers = createSubscribeToQueryCacheBatcher(
@@ -1040,6 +1091,8 @@ export const QueryRow: Component<{ query: Query }> = (props) => {
           queryKey: props.query.queryKey,
         })
         ?.getObserversCount() ?? 0,
+    true,
+    (e) => e.query.queryHash === props.query.queryHash,
   )
 
   const color = createMemo(() =>
@@ -1099,7 +1152,7 @@ export const QueryRow: Component<{ query: Query }> = (props) => {
   )
 }
 
-export const MutationRow: Component<{ mutation: Mutation }> = (props) => {
+const MutationRow: Component<{ mutation: Mutation }> = (props) => {
   const theme = useTheme()
   const styles = createMemo(() => {
     return theme() === 'dark' ? darkStyles : lightStyles
@@ -1207,7 +1260,7 @@ export const MutationRow: Component<{ mutation: Mutation }> = (props) => {
   )
 }
 
-export const QueryStatusCount: Component = () => {
+const QueryStatusCount: Component = () => {
   const stale = createSubscribeToQueryCacheBatcher(
     (queryCache) =>
       queryCache()
@@ -1261,7 +1314,7 @@ export const QueryStatusCount: Component = () => {
   )
 }
 
-export const MutationStatusCount: Component = () => {
+const MutationStatusCount: Component = () => {
   const success = createSubscribeToMutationCacheBatcher(
     (mutationCache) =>
       mutationCache()
@@ -1331,7 +1384,7 @@ export const MutationStatusCount: Component = () => {
   )
 }
 
-export const QueryStatus: Component<QueryStatusProps> = (props) => {
+const QueryStatus: Component<QueryStatusProps> = (props) => {
   const theme = useTheme()
   const styles = createMemo(() => {
     return theme() === 'dark' ? darkStyles : lightStyles
@@ -1800,7 +1853,7 @@ const QueryDetails = () => {
         </div>
         <div
           style={{
-            padding: '0.5rem',
+            padding: tokens.size[2],
           }}
           class="tsqd-query-details-explorer-container tsqd-query-details-data-explorer"
         >
@@ -1817,7 +1870,7 @@ const QueryDetails = () => {
         </div>
         <div
           style={{
-            padding: '0.5rem',
+            padding: tokens.size[2],
           }}
           class="tsqd-query-details-explorer-container tsqd-query-details-query-explorer"
         >
@@ -1935,7 +1988,7 @@ const MutationDetails = () => {
         </div>
         <div
           style={{
-            padding: '0.5rem',
+            padding: tokens.size[2],
           }}
           class="tsqd-query-details-explorer-container tsqd-query-details-query-explorer"
         >
@@ -1950,7 +2003,7 @@ const MutationDetails = () => {
         </div>
         <div
           style={{
-            padding: '0.5rem',
+            padding: tokens.size[2],
           }}
           class="tsqd-query-details-explorer-container tsqd-query-details-query-explorer"
         >
@@ -1965,7 +2018,7 @@ const MutationDetails = () => {
         </div>
         <div
           style={{
-            padding: '0.5rem',
+            padding: tokens.size[2],
           }}
           class="tsqd-query-details-explorer-container tsqd-query-details-query-explorer"
         >
@@ -1980,7 +2033,7 @@ const MutationDetails = () => {
         </div>
         <div
           style={{
-            padding: '0.5rem',
+            padding: tokens.size[2],
           }}
           class="tsqd-query-details-explorer-container tsqd-query-details-query-explorer"
         >
@@ -1995,7 +2048,13 @@ const MutationDetails = () => {
   )
 }
 
-const queryCacheMap = new Map<(q: Accessor<QueryCache>) => any, Setter<any>>()
+const queryCacheMap = new Map<
+  (q: Accessor<QueryCache>) => any,
+  {
+    setter: Setter<any>
+    shouldUpdate: (event: QueryCacheNotifyEvent) => boolean
+  }
+>()
 
 const setupQueryCacheSubscription = () => {
   const queryCache = createMemo(() => {
@@ -2003,25 +2062,27 @@ const setupQueryCacheSubscription = () => {
     return client.getQueryCache()
   })
 
-  const unsub = queryCache().subscribe(() => {
-    for (const [callback, setter] of queryCacheMap.entries()) {
-      queueMicrotask(() => {
-        setter(callback(queryCache))
-      })
-    }
+  const unsubscribe = queryCache().subscribe((q) => {
+    batch(() => {
+      for (const [callback, value] of queryCacheMap.entries()) {
+        if (!value.shouldUpdate(q)) continue
+        value.setter(callback(queryCache))
+      }
+    })
   })
 
   onCleanup(() => {
     queryCacheMap.clear()
-    unsub()
+    unsubscribe()
   })
 
-  return unsub
+  return unsubscribe
 }
 
 const createSubscribeToQueryCacheBatcher = <T,>(
   callback: (queryCache: Accessor<QueryCache>) => Exclude<T, Function>,
   equalityCheck: boolean = true,
+  shouldUpdate: (event: QueryCacheNotifyEvent) => boolean = () => true,
 ) => {
   const queryCache = createMemo(() => {
     const client = useQueryDevtoolsContext().client
@@ -2037,8 +2098,10 @@ const createSubscribeToQueryCacheBatcher = <T,>(
     setValue(callback(queryCache))
   })
 
-  // @ts-ignore
-  queryCacheMap.set(callback, setValue)
+  queryCacheMap.set(callback, {
+    setter: setValue,
+    shouldUpdate: shouldUpdate,
+  })
 
   onCleanup(() => {
     // @ts-ignore
@@ -2059,7 +2122,7 @@ const setupMutationCacheSubscription = () => {
     return client.getMutationCache()
   })
 
-  const unsub = mutationCache().subscribe(() => {
+  const unsubscribe = mutationCache().subscribe(() => {
     for (const [callback, setter] of mutationCacheMap.entries()) {
       queueMicrotask(() => {
         setter(callback(mutationCache))
@@ -2069,10 +2132,10 @@ const setupMutationCacheSubscription = () => {
 
   onCleanup(() => {
     mutationCacheMap.clear()
-    unsub()
+    unsubscribe()
   })
 
-  return unsub
+  return unsubscribe
 }
 
 const createSubscribeToMutationCacheBatcher = <T,>(
@@ -2173,6 +2236,22 @@ const stylesFactory = (theme: 'light' | 'dark') => {
         box-sizing: border-box;
         text-transform: none;
       }
+
+      & *::-webkit-scrollbar {
+        width: 7px;
+      }
+
+      & *::-webkit-scrollbar-track {
+        background: transparent;
+      }
+
+      & *::-webkit-scrollbar-thumb {
+        background: ${t(colors.gray[300], colors.darkGray[200])};
+      }
+
+      & *::-webkit-scrollbar-thumb:hover {
+        background: ${t(colors.gray[400], colors.darkGray[300])};
+      }
     `,
     'devtoolsBtn-position-bottom-right': css`
       bottom: 12px;
@@ -2195,7 +2274,7 @@ const stylesFactory = (theme: 'light' | 'dark') => {
       right: 0;
       left: 0;
       max-height: 90%;
-      min-height: 3.5rem;
+      min-height: ${size[14]};
       border-bottom: ${t(colors.gray[400], colors.darkGray[300])} 1px solid;
     `,
     'panel-position-bottom': css`
@@ -2203,7 +2282,7 @@ const stylesFactory = (theme: 'light' | 'dark') => {
       right: 0;
       left: 0;
       max-height: 90%;
-      min-height: 3.5rem;
+      min-height: ${size[14]};
       border-top: ${t(colors.gray[400], colors.darkGray[300])} 1px solid;
     `,
     'panel-position-right': css`
@@ -2535,6 +2614,8 @@ const stylesFactory = (theme: 'light' | 'dark') => {
           outline: 2px solid ${colors.blue[800]};
         }
         & svg {
+          width: ${tokens.size[3]};
+          height: ${tokens.size[3]};
           color: ${t(colors.gray[500], colors.gray[400])};
         }
       }
@@ -2620,8 +2701,8 @@ const stylesFactory = (theme: 'light' | 'dark') => {
       border-radius: ${tokens.border.radius.sm};
       background-color: ${t(colors.gray[100], colors.darkGray[400])};
       border: 1px solid ${t(colors.gray[300], colors.darkGray[200])};
-      width: 1.625rem;
-      height: 1.625rem;
+      width: ${tokens.size[6.5]};
+      height: ${tokens.size[6.5]};
       justify-content: center;
       display: flex;
       align-items: center;
